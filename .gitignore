@@ -1,4 +1,5 @@
-.venv
-cdk.out
+.venv/
+cdk.out/
 cdk.context.json
 .DS_Store
+data/

@@ -22,10 +22,6 @@ class OptimizelyE3Stack(Stack):
         # Retrieve account id from the stack
         account_id = Stack.of(self).account
 
-        # SQS queues to send S3 notifications to Glue
-        event_queue = sqs.Queue(self, 'EventQueue')
-        dl_queue = sqs.Queue(self, 'DeadLetterQueue')
-
         # IAM role for Glue to access S3
         glue_role = iam.Role(self, 'GlueRole',
             assumed_by=iam.ServicePrincipal('glue.amazonaws.com'),
@@ -33,6 +29,14 @@ class OptimizelyE3Stack(Stack):
                 iam.ManagedPolicy.from_aws_managed_policy_name('service-role/AWSGlueServiceRole')
             ],
         )
+
+        # SQS queues to send S3 notifications to Glue
+        event_queue = sqs.Queue(self, 'EventQueue')
+        event_queue.grant_consume_messages(glue_role)
+
+        # SQS queue in case Glue can not process messages
+        dl_queue = sqs.Queue(self, 'DeadLetterQueue')
+        dl_queue.grant_consume_messages(glue_role)
 
         # Bucket to store Parquet files
         input_bucket = s3.Bucket(self, 'Input')
@@ -55,6 +59,9 @@ class OptimizelyE3Stack(Stack):
             name='e3-crawler',
             database_name=database.ref,
             role=glue_role.role_arn,
+            recrawl_policy=glue.CfnCrawler.RecrawlPolicyProperty(
+                recrawl_behavior='CRAWL_EVENT_MODE',
+            ),
             targets=glue.CfnCrawler.TargetsProperty(
                 s3_targets=[
                     glue.CfnCrawler.S3TargetProperty(
