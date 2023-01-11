@@ -33,10 +33,12 @@ class OptimizelyE3Stack(Stack):
         # SQS queues to send S3 notifications to Glue
         event_queue = sqs.Queue(self, 'EventQueue')
         event_queue.grant_consume_messages(glue_role)
+        event_queue.grant(glue_role, 'sqs:SetQueueAttributes')
 
         # SQS queue in case Glue can not process messages
         dl_queue = sqs.Queue(self, 'DeadLetterQueue')
         dl_queue.grant_consume_messages(glue_role)
+        dl_queue.grant(glue_role, 'sqs:SetQueueAttributes')
 
         # Bucket to store Parquet files
         input_bucket = s3.Bucket(self, 'Input')
@@ -73,6 +75,9 @@ class OptimizelyE3Stack(Stack):
             ),
         )
 
+        # Wait with creating the crawler until the queue is ready
+        cfn_crawler.node.add_dependency(event_queue)
+
         # Custom Athena workgroup since the primary workgroup does not have an output location by default
         work_group = athena.CfnWorkGroup(self, 'Workgroup',
             name='optimizely-e3',
@@ -86,7 +91,7 @@ class OptimizelyE3Stack(Stack):
 
 
 app = App()
-OptimizelyE3Stack(app, 'OptimizelyE3',
+OptimizelyE3Stack(app, 'OptimizelyE3Athena',
     env=Environment(
         account=os.getenv('CDK_DEFAULT_ACCOUNT'),
         region=os.getenv('CDK_DEFAULT_REGION')
