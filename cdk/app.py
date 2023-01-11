@@ -8,6 +8,7 @@ from aws_cdk import (
     aws_athena as athena,
     aws_glue as glue,
     aws_iam as iam,
+    aws_lambda as lambda_,
     aws_s3 as s3,
     aws_s3_notifications as s3_notifications,
     aws_sqs as sqs,
@@ -30,20 +31,55 @@ class OptimizelyE3Stack(Stack):
             ],
         )
 
-        # SQS queues to send S3 notifications to Glue
-        event_queue = sqs.Queue(self, 'EventQueue')
-        event_queue.grant_consume_messages(glue_role)
-        event_queue.grant(glue_role, 'sqs:SetQueueAttributes')
+        # IAM role for the Lambda function that collects object keys
+        list_function_role = iam.Role(self, 'ListFunctionRole',
+            assumed_by=iam.ServicePrincipal('lambda.amazonaws.com'),
+            managed_policies=[
+                iam.ManagedPolicy.from_aws_managed_policy_name('service-role/AWSLambdaBasicExecutionRole')
+            ],
+        )
+
+        # IAM role for the Lambda function that copies the object contents
+        copy_function_role = iam.Role(self, 'CopyFunctionRole',
+            assumed_by=iam.ServicePrincipal('lambda.amazonaws.com'),
+            managed_policies=[
+                iam.ManagedPolicy.from_aws_managed_policy_name('service-role/AWSLambdaBasicExecutionRole')
+            ],
+        )
+
+        # SQS queue to import list of objects
+        import_queue = sqs.Queue(self, 'ImportQueue')
+        import_queue.grant_send_messages(list_function_role)
+        import_queue.grant_consume_messages(copy_function_role)
+
+        # SQS queue to send S3 notifications to Glue
+        crawler_event_queue = sqs.Queue(self, 'CrawlerEventQueue')
+        crawler_event_queue.grant_consume_messages(glue_role)
+        crawler_event_queue.grant(glue_role, 'sqs:SetQueueAttributes')
 
         # SQS queue in case Glue can not process messages
-        dl_queue = sqs.Queue(self, 'DeadLetterQueue')
-        dl_queue.grant_consume_messages(glue_role)
-        dl_queue.grant(glue_role, 'sqs:SetQueueAttributes')
+        crawler_dl_queue = sqs.Queue(self, 'CrawlerDeadLetterQueue')
+        crawler_dl_queue.grant_consume_messages(glue_role)
+        crawler_dl_queue.grant(glue_role, 'sqs:SetQueueAttributes')
+
+        # Lambda function that lists all objects
+        list_function = lambda_.Function(
+            self, 'ListFunction',
+            runtime=lambda_.Runtime.PYTHON_3_8,
+            code=lambda_.Code.from_asset('src/list-objects'),
+            handler='index.handler',
+            role=list_function_role,
+            environment={
+                'QUEUE_URL': import_queue.queue_url,
+            }
+        )
 
         # Bucket to store Parquet files
         input_bucket = s3.Bucket(self, 'Input')
         input_bucket.grant_read(glue_role)
-        input_bucket.add_event_notification(s3.EventType.OBJECT_CREATED, s3_notifications.SqsDestination(event_queue))
+        input_bucket.add_event_notification(
+            s3.EventType.OBJECT_CREATED, s3_notifications.SqsDestination(crawler_event_queue)
+        )
 
         # Bucket to upload query results from Athena
         results_bucket = s3.Bucket(self, 'Results')
@@ -68,15 +104,16 @@ class OptimizelyE3Stack(Stack):
                 s3_targets=[
                     glue.CfnCrawler.S3TargetProperty(
                         path='s3://{}/'.format(input_bucket.bucket_name),
-                        event_queue_arn=event_queue.queue_arn,
-                        dlq_event_queue_arn=dl_queue.queue_arn,
+                        event_queue_arn=crawler_event_queue.queue_arn,
+                        dlq_event_queue_arn=crawler_dl_queue.queue_arn,
                     )
                 ]
             ),
         )
 
-        # Wait with creating the crawler until the queue is ready
-        cfn_crawler.node.add_dependency(event_queue)
+        # Wait with creating the crawler until the queues are ready
+        cfn_crawler.node.add_dependency(crawler_event_queue)
+        cfn_crawler.node.add_dependency(crawler_dl_queue)
 
         # Custom Athena workgroup since the primary workgroup does not have an output location by default
         work_group = athena.CfnWorkGroup(self, 'Workgroup',

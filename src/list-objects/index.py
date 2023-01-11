@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-import requests
+from urllib.request import Request, urlopen
+from os import environ
 import boto3
 import re
+import json
+
+QUEUE_URL = environ['QUEUE_URL']
 
 
 def handler(event, context):
@@ -9,12 +13,13 @@ def handler(event, context):
     token = event['token']
 
     # Make request to Optimizely auth API
-    response = requests.get(
-        'https://api.optimizely.com/v2/export/credentials',
+    request = Request(
+        'https://api.optimizely.com/v2/export/credentials?duration=1h',
         headers={
             'Authorization': 'Bearer {}'.format(token)
         }
-    ).json()
+    )
+    response = json.loads(urlopen(request).read().decode())
 
     # Unpack data from response
     credentials = response['credentials']
@@ -27,31 +32,42 @@ def handler(event, context):
         response['s3Path']
     )
 
-    # Create S3 client
-    client = boto3.client('s3',
+    # Create S3 client using credentials from Optimizely
+    s3_client = boto3.client('s3',
         aws_access_key_id=key_id,
         aws_secret_access_key=secret_key,
         aws_session_token=session_token
     )
 
+    # Create SQS client using the current function role
+    sqs_client = boto3.client('sqs')
+
     # Create paginator as number of objects might exceed limit
-    paginator = client.get_paginator('list_objects_v2')
+    # TODO: narrow down by date range
+    paginator = s3_client.get_paginator('list_objects_v2')
     response_iterator = paginator.paginate(
         Bucket='optimizely-events-data',
         Prefix='v1/account_id={}/'.format(account_id),
+        PaginationConfig={
+            'PageSize': 100,
+        },
     )
 
-    # Send an SQS message for each page of 1000 objects
+    # Iterate over all pages in the paginator
     for response in response_iterator:
-        keys = [
+
+        # Get only the object key and discard the rest
+        object_keys = [
             s3_object['Key'] for s3_object in response['Contents']
         ]
 
-        # TODO: send keys as an SQS message
-        print(len(keys))
+        # Send list of object keys as message to SQS
+        sqs_client.send_message(
+            QueueUrl=QUEUE_URL,
+            MessageBody=json.dumps(object_keys)
+        )
 
 
 # Branch used for local development
 if __name__ == '__main__':
-    from os import environ
     handler({'token': environ['OPTIMIZELY_API_TOKEN']}, None)
