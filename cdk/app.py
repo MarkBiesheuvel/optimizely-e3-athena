@@ -64,16 +64,14 @@ class OptimizelyE3Stack(Stack):
             self, 'CrawlerEventQueue',
             enforce_ssl=True,
         )
-        crawler_event_queue.grant_consume_messages(glue_role)
-        crawler_event_queue.grant(glue_role, 'sqs:SetQueueAttributes')
+        crawler_event_queue.grant(glue_role, 'sqs:*')
 
         # SQS queue in case Glue can not process messages
         crawler_dl_queue = sqs.Queue(
             self, 'CrawlerDeadLetterQueue',
             enforce_ssl=True,
         )
-        crawler_dl_queue.grant_consume_messages(glue_role)
-        crawler_dl_queue.grant(glue_role, 'sqs:SetQueueAttributes')
+        crawler_dl_queue.grant(glue_role, 'sqs:*')
 
         # Lambda function that lists all objects
         list_function = lambda_.Function(

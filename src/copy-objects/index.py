@@ -16,7 +16,7 @@ TEMPORARY_FILE_NAME = '/tmp/data'
 ORIGINAL_KEY_REGEX = re.compile(
     r'v1/account_id=([0-9]+)/type=([a-z]+)/date=([0-9]+)-([0-9]+)-([0-9]+)/([a-z]+)=([a-zA-Z0-9_]+)/'
 )
-NEW_KEY_REPLACEMENT = r'type=\2/account_id=\1/\6=\7/year=\3/month=\4/day=\5/'
+NEW_KEY_REPLACEMENT = r'\2/account=\1/\6=\7/year=\3/month=\4/day=\5/'
 
 
 # TODO: move function to Lambda layer
