@@ -5,15 +5,12 @@ import boto3
 import re
 import json
 
+SOURCE_BUCKET_NAME = 'optimizely-events-data'
 QUEUE_URL = environ['QUEUE_URL']
 
 
-def handler(event, context):
-    # TODO: input validation
-
-    # Get settings from event
-    token = event['token']
-
+# TODO: move function to Lambda layer
+def get_s3_client(token):
     # Make request to Optimizely auth API
     request = Request(
         'https://api.optimizely.com/v2/export/credentials?duration=1h',
@@ -28,6 +25,7 @@ def handler(event, context):
     key_id = credentials['accessKeyId']
     secret_key = credentials['secretAccessKey']
     session_token = credentials['sessionToken']
+
     account_id = re.sub(
         r'.*/account_id=([0-9]+)/',
         r'\1',
@@ -41,14 +39,23 @@ def handler(event, context):
         aws_session_token=session_token
     )
 
-    # Create SQS client using the current function role
+    return (s3_client, account_id)
+
+
+def handler(event, context):
+    # TODO: input validation
+
+    # Get settings from event
+    token = event['token']
+
+    s3_client, account_id = get_s3_client(token)
     sqs_client = boto3.client('sqs')
 
     # Create paginator as number of objects might exceed limit
     # TODO: narrow down by date range
     paginator = s3_client.get_paginator('list_objects_v2')
     response_iterator = paginator.paginate(
-        Bucket='optimizely-events-data',
+        Bucket=SOURCE_BUCKET_NAME,
         Prefix='v1/account_id={}/'.format(account_id),
         PaginationConfig={
             'PageSize': 100,
@@ -72,7 +79,12 @@ def handler(event, context):
             })
         )
 
+        print('Sent message to SQS containing {} object keys'.format(len(object_keys)))
+
 
 # Branch used for local development
 if __name__ == '__main__':
-    handler({'token': environ['OPTIMIZELY_API_TOKEN']}, None)
+    event = {
+        'token': environ['OPTIMIZELY_API_TOKEN']
+    }
+    handler(event, None)
