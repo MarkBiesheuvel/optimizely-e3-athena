@@ -5,10 +5,13 @@ from aws_cdk import (
     App,
     Environment,
     Stack,
+    Duration,
+    Size,
     aws_athena as athena,
     aws_glue as glue,
     aws_iam as iam,
     aws_lambda as lambda_,
+    aws_lambda_event_sources as lambda_event_source,
     aws_s3 as s3,
     aws_s3_notifications as s3_notifications,
     aws_sqs as sqs,
@@ -48,17 +51,27 @@ class OptimizelyE3Stack(Stack):
         )
 
         # SQS queue to import list of objects
-        import_queue = sqs.Queue(self, 'ImportQueue')
+        import_queue = sqs.Queue(
+            self, 'ImportQueue',
+            visibility_timeout=Duration.minutes(2),
+            enforce_ssl=True,
+        )
         import_queue.grant_send_messages(list_function_role)
         import_queue.grant_consume_messages(copy_function_role)
 
         # SQS queue to send S3 notifications to Glue
-        crawler_event_queue = sqs.Queue(self, 'CrawlerEventQueue')
+        crawler_event_queue = sqs.Queue(
+            self, 'CrawlerEventQueue',
+            enforce_ssl=True,
+        )
         crawler_event_queue.grant_consume_messages(glue_role)
         crawler_event_queue.grant(glue_role, 'sqs:SetQueueAttributes')
 
         # SQS queue in case Glue can not process messages
-        crawler_dl_queue = sqs.Queue(self, 'CrawlerDeadLetterQueue')
+        crawler_dl_queue = sqs.Queue(
+            self, 'CrawlerDeadLetterQueue',
+            enforce_ssl=True,
+        )
         crawler_dl_queue.grant_consume_messages(glue_role)
         crawler_dl_queue.grant(glue_role, 'sqs:SetQueueAttributes')
 
@@ -69,6 +82,8 @@ class OptimizelyE3Stack(Stack):
             code=lambda_.Code.from_asset('src/list-objects'),
             handler='index.handler',
             role=list_function_role,
+            memory_size=512,
+            timeout=Duration.minutes(2),
             environment={
                 'QUEUE_URL': import_queue.queue_url,
             }
@@ -76,9 +91,28 @@ class OptimizelyE3Stack(Stack):
 
         # Bucket to store Parquet files
         input_bucket = s3.Bucket(self, 'Input')
-        input_bucket.grant_read(glue_role)
+        input_bucket.grant_read_write(copy_function_role) # Allow copy function to write to this bucket
+        input_bucket.grant_read(glue_role) # Allow glue to read from this bucket
         input_bucket.add_event_notification(
             s3.EventType.OBJECT_CREATED, s3_notifications.SqsDestination(crawler_event_queue)
+        )
+
+        # Lambda function that copy over S3 objects
+        copy_function = lambda_.Function(
+            self, 'CopyFunction',
+            runtime=lambda_.Runtime.PYTHON_3_8,
+            code=lambda_.Code.from_asset('src/copy-objects'),
+            handler='index.handler',
+            memory_size=1024,
+            timeout=Duration.minutes(2),
+            ephemeral_storage_size=Size.mebibytes(10240), # Request extra /tmp storage since copying
+            role=copy_function_role,
+            events=[
+                lambda_event_source.SqsEventSource(import_queue)
+            ],
+            environment={
+                'DESTINATION_BUCKET_NAME': input_bucket.bucket_name,
+            }
         )
 
         # Bucket to upload query results from Athena

@@ -9,6 +9,8 @@ QUEUE_URL = environ['QUEUE_URL']
 
 
 def handler(event, context):
+    # TODO: input validation
+
     # Get settings from event
     token = event['token']
 
@@ -64,7 +66,10 @@ def handler(event, context):
         # Send list of object keys as message to SQS
         sqs_client.send_message(
             QueueUrl=QUEUE_URL,
-            MessageBody=json.dumps(object_keys)
+            MessageBody=json.dumps({
+                'token': token,
+                'object_keys': object_keys,
+            })
         )
 
 
