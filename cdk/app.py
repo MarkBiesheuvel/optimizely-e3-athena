@@ -106,7 +106,10 @@ class OptimizelyE3Stack(Stack):
             ephemeral_storage_size=Size.mebibytes(10240), # Request extra /tmp storage since copying
             role=copy_function_role,
             events=[
-                lambda_event_source.SqsEventSource(import_queue)
+                lambda_event_source.SqsEventSource(
+                    import_queue,
+                    batch_size=1,
+                )
             ],
             environment={
                 'DESTINATION_BUCKET_NAME': input_bucket.bucket_name,
