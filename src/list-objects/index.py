@@ -42,21 +42,12 @@ def get_s3_client(token):
     return (s3_client, account_id)
 
 
-def handler(event, context):
-    # TODO: input validation
-
-    # Get settings from event
-    token = event['token']
-
-    s3_client, account_id = get_s3_client(token)
-    sqs_client = boto3.client('sqs')
-
+def list_objects(s3_client, sqs_client, token, prefix):
     # Create paginator as number of objects might exceed limit
-    # TODO: narrow down by date range
     paginator = s3_client.get_paginator('list_objects_v2')
     response_iterator = paginator.paginate(
         Bucket=SOURCE_BUCKET_NAME,
-        Prefix='v1/account_id={}/'.format(account_id),
+        Prefix=prefix,
         PaginationConfig={
             'PageSize': 100,
         },
@@ -65,9 +56,15 @@ def handler(event, context):
     # Iterate over all pages in the paginator
     for response in response_iterator:
 
+        if response['KeyCount'] == 0:
+            print('No objects found for given token and date range')
+            continue
+
         # Get only the object key and discard the rest
         object_keys = [
-            s3_object['Key'] for s3_object in response['Contents']
+            s3_object['Key']
+            for s3_object in response['Contents']
+            if not s3_object['Key'].endswith('_SUCCESS')
         ]
 
         # Send list of object keys as message to SQS
@@ -82,9 +79,57 @@ def handler(event, context):
         print('Sent message to SQS containing {} object keys'.format(len(object_keys)))
 
 
-# Branch used for local development
+def make_prefix(account_id, type_, year=None, month=None, day=None):
+    prefix = 'v1/account_id={}/type={}'.format(account_id, type_)
+
+    if year is not None:
+        prefix = '{}/date={:04d}'.format(prefix, year)
+
+        if month is not None:
+            prefix = '{}-{:02d}'.format(prefix, month)
+
+            if day is not None:
+                prefix = '{}-{:02d}'.format(prefix, day)
+
+    return prefix
+
+
+def handler(event, context):
+    # Get settings from event
+    token = event.get('token')
+    year = event.get('year')
+    month = event.get('month')
+    day = event.get('day')
+
+    # Input validation
+    if token is None:
+        raise 'No token provided.'
+    if year is not None and not isinstance(year, int):
+        raise 'Year needs to be either an integer or null.'
+    if month is not None and not isinstance(year, int):
+        raise 'Month needs to be either an integer or null.'
+    if day is not None and not isinstance(year, int):
+        raise 'Day needs to be either an integer or null.'
+
+    # AWS SDK clients
+    s3_client, account_id = get_s3_client(token)
+    sqs_client = boto3.client('sqs')
+
+    # Iterate over both decisions and events
+    prefixes = [
+        make_prefix(account_id, 'decisions', year, month, day),
+        make_prefix(account_id, 'events', year, month, day),
+    ]
+    for prefix in prefixes:
+        list_objects(s3_client, sqs_client, token, prefix)
+
+
+# If-branch used for local development
 if __name__ == '__main__':
     event = {
-        'token': environ['OPTIMIZELY_API_TOKEN']
+        'token': environ['OPTIMIZELY_API_TOKEN'],
+        'year': 2023,
+        'month': 1,
+        'day': None,
     }
     handler(event, None)
