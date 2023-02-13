@@ -49,7 +49,7 @@ def list_objects(s3_client, sqs_client, token, prefix):
         Bucket=SOURCE_BUCKET_NAME,
         Prefix=prefix,
         PaginationConfig={
-            'PageSize': 100,
+            'PageSize': 200,
         },
     )
 

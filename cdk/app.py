@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import json
 from constructs import Construct
 from aws_cdk import (
     App,
@@ -50,11 +51,24 @@ class OptimizelyE3Stack(Stack):
             ],
         )
 
+        # Dead letter queue for Import queue
+        dead_letter_queue = sqs.Queue(
+            self, 'DeadLetterQueue',
+            visibility_timeout=Duration.minutes(10),
+            enforce_ssl=True,
+            retention_period=Duration.days(14),
+        )
+
         # SQS queue to import list of objects
         import_queue = sqs.Queue(
             self, 'ImportQueue',
-            visibility_timeout=Duration.minutes(2),
+            visibility_timeout=Duration.minutes(15),
             enforce_ssl=True,
+            retention_period=Duration.days(1),
+            dead_letter_queue=sqs.DeadLetterQueue(
+                max_receive_count=4,
+                queue=dead_letter_queue,
+            )
         )
         import_queue.grant_send_messages(list_function_role)
         import_queue.grant_consume_messages(copy_function_role)
@@ -63,15 +77,9 @@ class OptimizelyE3Stack(Stack):
         crawler_event_queue = sqs.Queue(
             self, 'CrawlerEventQueue',
             enforce_ssl=True,
+            retention_period=Duration.days(1),
         )
         crawler_event_queue.grant(glue_role, 'sqs:*')
-
-        # SQS queue in case Glue can not process messages
-        crawler_dl_queue = sqs.Queue(
-            self, 'CrawlerDeadLetterQueue',
-            enforce_ssl=True,
-        )
-        crawler_dl_queue.grant(glue_role, 'sqs:*')
 
         # Lambda function that lists all objects
         list_function = lambda_.Function(
@@ -81,7 +89,7 @@ class OptimizelyE3Stack(Stack):
             handler='index.handler',
             role=list_function_role,
             memory_size=512,
-            timeout=Duration.minutes(2),
+            timeout=Duration.minutes(5),
             environment={
                 'QUEUE_URL': import_queue.queue_url,
             }
@@ -102,13 +110,14 @@ class OptimizelyE3Stack(Stack):
             code=lambda_.Code.from_asset('src/copy-objects'),
             handler='index.handler',
             memory_size=1024,
-            timeout=Duration.minutes(2),
+            timeout=Duration.minutes(5),
             ephemeral_storage_size=Size.mebibytes(10240), # Request extra /tmp storage since copying
             role=copy_function_role,
             events=[
                 lambda_event_source.SqsEventSource(
                     import_queue,
                     batch_size=1,
+                    max_concurrency=5,
                 )
             ],
             environment={
@@ -132,15 +141,29 @@ class OptimizelyE3Stack(Stack):
             name='e3-crawler',
             database_name=database.ref,
             role=glue_role.role_arn,
+            configuration=json.dumps(
+                {
+                    'Version': 1.0,
+                    'CrawlerOutput': {
+                        'Partitions': {
+                            'AddOrUpdateBehavior': 'InheritFromTable'
+                        }
+                    }
+                }
+            ),
             recrawl_policy=glue.CfnCrawler.RecrawlPolicyProperty(
                 recrawl_behavior='CRAWL_EVENT_MODE',
+            ),
+            schema_change_policy=glue.CfnCrawler.SchemaChangePolicyProperty(
+                delete_behavior="DELETE_FROM_DATABASE",
+                update_behavior="LOG",
             ),
             targets=glue.CfnCrawler.TargetsProperty(
                 s3_targets=[
                     glue.CfnCrawler.S3TargetProperty(
-                        path='s3://{}/'.format(input_bucket.bucket_name),
+                        path='s3://{}'.format(input_bucket.bucket_name),
                         event_queue_arn=crawler_event_queue.queue_arn,
-                        dlq_event_queue_arn=crawler_dl_queue.queue_arn,
+                        sample_size=1,
                     )
                 ]
             ),
@@ -148,7 +171,6 @@ class OptimizelyE3Stack(Stack):
 
         # Wait with creating the crawler until the queues are ready
         cfn_crawler.node.add_dependency(crawler_event_queue)
-        cfn_crawler.node.add_dependency(crawler_dl_queue)
 
         # Custom Athena workgroup since the primary workgroup does not have an output location by default
         work_group = athena.CfnWorkGroup(self, 'Workgroup',
