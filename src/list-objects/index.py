@@ -1,12 +1,22 @@
 #!/usr/bin/env python3
 from urllib.request import Request, urlopen
 from os import environ
+from datetime import date, timedelta
 import boto3
 import re
 import json
 
 SOURCE_BUCKET_NAME = 'optimizely-events-data'
 QUEUE_URL = environ['QUEUE_URL']
+
+
+# Source: https://stackoverflow.com/a/1060330/825547
+def daterange(start_date, end_date):
+    delta = timedelta(days=1)
+    current_date = start_date
+    while current_date <= end_date:
+        yield current_date
+        current_date += delta
 
 
 # TODO: move function to Lambda layer
@@ -48,88 +58,87 @@ def list_objects(s3_client, sqs_client, token, prefix):
     response_iterator = paginator.paginate(
         Bucket=SOURCE_BUCKET_NAME,
         Prefix=prefix,
-        PaginationConfig={
-            'PageSize': 200,
-        },
     )
 
     # Iterate over all pages in the paginator
-    for response in response_iterator:
-
-        if response['KeyCount'] == 0:
-            print('No objects found for given token and date range')
-            continue
-
-        # Get only the object key and discard the rest
-        object_keys = [
-            s3_object['Key']
-            for s3_object in response['Contents']
-            if not s3_object['Key'].endswith('_SUCCESS')
-        ]
-
-        # Send list of object keys as message to SQS
-        sqs_client.send_message(
-            QueueUrl=QUEUE_URL,
-            MessageBody=json.dumps({
-                'token': token,
-                'object_keys': object_keys,
-            })
-        )
-
-        print('Sent message to SQS containing {} object keys'.format(len(object_keys)))
+    # Get only the object key and discard the rest
+    return (
+        s3_object['Key']
+        for response in response_iterator
+        if response['KeyCount'] > 0
+        for s3_object in response['Contents']
+        if not s3_object['Key'].endswith('_SUCCESS')
+    )
 
 
-def make_prefix(account_id, type_, year=None, month=None, day=None):
-    prefix = 'v1/account_id={}/type={}'.format(account_id, type_)
-
-    if year is not None:
-        prefix = '{}/date={:04d}'.format(prefix, year)
-
-        if month is not None:
-            prefix = '{}-{:02d}'.format(prefix, month)
-
-            if day is not None:
-                prefix = '{}-{:02d}'.format(prefix, day)
-
-    return prefix
-
+def make_prefix(account_id, table, year, month, day):
+    return 'v1/account_id={}/type={}/date={:04d}-{:02d}-{:02d}'.format(
+        account_id,
+        table,
+        year,
+        month,
+        day,
+    )
 
 def handler(event, context):
     # Get settings from event
-    token = event.get('token')
-    year = event.get('year')
-    month = event.get('month')
-    day = event.get('day')
+    token = event['token']
+    start = event['start']
+    end = event['end']
 
-    # Input validation
-    if token is None:
-        raise 'No token provided.'
-    if year is not None and not isinstance(year, int):
-        raise 'Year needs to be either an integer or null.'
-    if month is not None and not isinstance(year, int):
-        raise 'Month needs to be either an integer or null.'
-    if day is not None and not isinstance(year, int):
-        raise 'Day needs to be either an integer or null.'
+    start_date = date(start['year'], start['month'], start['day'])
+    end_date = date(start['year'], end['month'], end['day'])
 
     # AWS SDK clients
     s3_client, account_id = get_s3_client(token)
     sqs_client = boto3.client('sqs')
 
     # Iterate over both decisions and events
-    prefixes = [
-        make_prefix(account_id, 'decisions', year, month, day),
-        make_prefix(account_id, 'events', year, month, day),
-    ]
-    for prefix in prefixes:
-        list_objects(s3_client, sqs_client, token, prefix)
+    prefixes = (
+        make_prefix(account_id, table, current_date.year, current_date.month, current_date.day)
+        for current_date in daterange(start_date, end_date)
+        for table in ['decisions', 'events']
+    )
+
+    object_keys = list(
+        object_key
+        for prefix in prefixes
+        for object_key in list_objects(s3_client, sqs_client, token, prefix)
+    )
+
+    # Send messages of 200 object keys
+    n = 200
+
+    # Iterate over batches
+    for i in range(0, len(object_keys), n):
+        batch = object_keys[i:i + n]
+
+        # Send list of object keys as message to SQS
+        sqs_client.send_message(
+            QueueUrl=QUEUE_URL,
+            MessageBody=json.dumps({
+                'token': token,
+                'object_keys': batch,
+            })
+        )
+
+        print('Sent message to SQS containing {} object keys'.format(len(batch)))
 
 
-# If-branch used for local development
+# DO NOT CHANGE THIS IN THE LAMBDA FUNCTION
+# THIS IS FOR LOCAL DEVELOPMENT ONLY
 if __name__ == '__main__':
     event = {
         'token': environ['OPTIMIZELY_API_TOKEN'],
-        'year': 2023,
-        'month': 1,
-        'day': None,
+        'start': {
+            'year': 2023,
+            'month': 1,
+            'day': 1,
+        },
+        'end': {
+            'year': 2023,
+            'month': 3,
+            'day': 16,
+        },
     }
     handler(event, None)
