@@ -10,13 +10,13 @@ SOURCE_BUCKET_NAME = 'optimizely-events-data'
 DESTINATION_BUCKET_NAME = environ['DESTINATION_BUCKET_NAME']
 
 # Overwrite the same file again and again
-TEMPORARY_FILE_NAME = '/tmp/data'
+TEMPORARY_FILENAME = '/tmp/data'
 
 # Regular expression to rewrite the S3 key to improve performance in Athena
 ORIGINAL_KEY_REGEX = re.compile(
     r'v1/account_id=([0-9]+)/type=([a-z]+)/date=([0-9]+)-([0-9]+)-([0-9]+)/([a-z]+)=([a-zA-Z0-9_]+)/'
 )
-NEW_KEY_REPLACEMENT = r'\2/account=\1/\6=\7/year=\3/month=\4/day=\5/'
+NEW_KEY_REPLACEMENT = r'\2/account=\1/\6=\7/'
 
 
 # TODO: move function to Lambda layer
@@ -44,6 +44,14 @@ def get_s3_client(token):
     )
 
 
+def does_object_exist(client, bucket, key):
+    try:
+        client.head_object(Bucket=bucket, Key=key)
+        return True
+    except:
+        return False
+
+
 def handler(event, context):
     for record in event['Records']:
         message = json.loads(record['body'])
@@ -55,30 +63,41 @@ def handler(event, context):
         destination_s3_client = boto3.client('s3')
 
         for source_key in object_keys:
-            if ORIGINAL_KEY_REGEX.match(source_key):
+            # Create a real counter, since some objects might be skipped
+            counter = 0
 
-                destination_key = ORIGINAL_KEY_REGEX.sub(
-                    NEW_KEY_REPLACEMENT,
-                    source_key
-                )
+            # Skip source keys that do not match the expected regex
+            if not ORIGINAL_KEY_REGEX.match(source_key):
+                continue
 
-                # TODO: skip if `destination_key` already exists
+            # Create destination by performing a regex replace
+            destination_key = ORIGINAL_KEY_REGEX.sub(
+                NEW_KEY_REPLACEMENT,
+                source_key
+            )
 
-                # Download from source bucket using source credentials
-                source_s3_client.download_file(
-                    Filename=TEMPORARY_FILE_NAME,
-                    Bucket=SOURCE_BUCKET_NAME,
-                    Key=source_key
-                )
+            # Skip if `destination_key` already exists
+            if does_object_exist(destination_s3_client, DESTINATION_BUCKET_NAME, destination_key):
+                continue
 
-                # Upload to bucket in own account
-                destination_s3_client.upload_file(
-                    Filename=TEMPORARY_FILE_NAME,
-                    Bucket=DESTINATION_BUCKET_NAME,
-                    Key=destination_key,
-                )
+            # Download from source bucket using source credentials
+            source_s3_client.download_file(
+                Filename=TEMPORARY_FILENAME,
+                Bucket=SOURCE_BUCKET_NAME,
+                Key=source_key,
+            )
 
-        print('Copied {} objects to this account'.format(len(object_keys)))
+            # Upload to bucket in own account
+            destination_s3_client.upload_file(
+                Filename=TEMPORARY_FILENAME,
+                Bucket=DESTINATION_BUCKET_NAME,
+                Key=destination_key,
+            )
+
+            # Increment counter
+            counter += 1
+
+        print('Copied {} objects to this account'.format(counter))
 
 
 # Branch used for local development

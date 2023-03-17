@@ -96,7 +96,15 @@ class OptimizelyE3Stack(Stack):
         )
 
         # Bucket to store Parquet files
-        input_bucket = s3.Bucket(self, 'Input')
+        input_bucket = s3.Bucket(self, 'Data',
+            lifecycle_rules=[
+                s3.LifecycleRule(
+                    id="auto-delete",
+                    enabled=True,
+                    expiration=Duration.days(7),
+                )
+            ]
+        )
         input_bucket.grant_read_write(copy_function_role) # Allow copy function to write to this bucket
         input_bucket.grant_read(glue_role) # Allow glue to read from this bucket
         input_bucket.add_event_notification(
@@ -126,7 +134,15 @@ class OptimizelyE3Stack(Stack):
         )
 
         # Bucket to upload query results from Athena
-        results_bucket = s3.Bucket(self, 'Results')
+        results_bucket = s3.Bucket(self, 'Results',
+            lifecycle_rules=[
+                s3.LifecycleRule(
+                    id="auto-delete",
+                    enabled=True,
+                    expiration=Duration.days(7),
+                )
+            ]
+        )
 
         # Glue database to store all data
         database = glue.CfnDatabase(self, 'Database',
@@ -137,31 +153,30 @@ class OptimizelyE3Stack(Stack):
         )
 
         # Crawler to index new files uploaded to S3 location
-        cfn_crawler = glue.CfnCrawler(self, 'Crawler',
-            name='e3-crawler',
+        cfn_incremental_crawler = glue.CfnCrawler(self, 'IncrementalCrawler',
+            name='incremental-crawler',
             database_name=database.ref,
             role=glue_role.role_arn,
             configuration=json.dumps(
                 {
                     'Version': 1.0,
-                    'CrawlerOutput': {
-                        'Partitions': {
-                            'AddOrUpdateBehavior': 'InheritFromTable'
-                        }
-                    }
+                    'CrawlerOutput': {}
                 }
             ),
             recrawl_policy=glue.CfnCrawler.RecrawlPolicyProperty(
                 recrawl_behavior='CRAWL_EVENT_MODE',
             ),
             schema_change_policy=glue.CfnCrawler.SchemaChangePolicyProperty(
-                delete_behavior="DELETE_FROM_DATABASE",
-                update_behavior="LOG",
+                delete_behavior='LOG',
+                update_behavior='LOG',
+            ),
+            schedule=glue.CfnCrawler.ScheduleProperty(
+                schedule_expression='cron(0/15 * ? * MON-SAT *)'
             ),
             targets=glue.CfnCrawler.TargetsProperty(
                 s3_targets=[
                     glue.CfnCrawler.S3TargetProperty(
-                        path='s3://{}'.format(input_bucket.bucket_name),
+                        path='s3://{}/'.format(input_bucket.bucket_name),
                         event_queue_arn=crawler_event_queue.queue_arn,
                         sample_size=1,
                     )
@@ -169,8 +184,39 @@ class OptimizelyE3Stack(Stack):
             ),
         )
 
+        cfn_everything_crawler = glue.CfnCrawler(self, 'EverythingCrawler',
+            name='everything-crawler',
+            database_name=database.ref,
+            role=glue_role.role_arn,
+            configuration=json.dumps(
+                {
+                    'Version': 1.0,
+                    'CrawlerOutput': {}
+                }
+            ),
+            recrawl_policy=glue.CfnCrawler.RecrawlPolicyProperty(
+                recrawl_behavior='CRAWL_EVERYTHING',
+            ),
+            schema_change_policy=glue.CfnCrawler.SchemaChangePolicyProperty(
+                delete_behavior='DELETE_FROM_DATABASE',
+                update_behavior='UPDATE_IN_DATABASE',
+            ),
+            schedule=glue.CfnCrawler.ScheduleProperty(
+                schedule_expression='cron(0 4 ? * SUN *)'
+            ),
+            targets=glue.CfnCrawler.TargetsProperty(
+                s3_targets=[
+                    glue.CfnCrawler.S3TargetProperty(
+                        path='s3://{}/'.format(input_bucket.bucket_name),
+                        sample_size=1,
+                    )
+                ]
+            ),
+        )
+
         # Wait with creating the crawler until the queues are ready
-        cfn_crawler.node.add_dependency(crawler_event_queue)
+        cfn_incremental_crawler.node.add_dependency(crawler_event_queue)
+        cfn_everything_crawler.node.add_dependency(crawler_event_queue)
 
         # Custom Athena workgroup since the primary workgroup does not have an output location by default
         work_group = athena.CfnWorkGroup(self, 'Workgroup',
