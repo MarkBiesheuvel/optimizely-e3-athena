@@ -62,10 +62,10 @@ def handler(event, context):
         source_s3_client = get_s3_client(token)
         destination_s3_client = boto3.client('s3')
 
-        for source_key in object_keys:
-            # Create a real counter, since some objects might be skipped
-            counter = 0
+        # Create a real counter, since some objects might be skipped
+        counter = 0
 
+        for source_key in object_keys:
             # Skip source keys that do not match the expected regex
             if not ORIGINAL_KEY_REGEX.match(source_key):
                 continue
