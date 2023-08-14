@@ -14,7 +14,7 @@ TEMPORARY_FILENAME = '/tmp/data'
 
 # Regular expression to rewrite the S3 key to improve performance in Athena
 ORIGINAL_KEY_REGEX = re.compile(
-    r'v1/account_id=([0-9]+)/type=([a-z]+)/date=([0-9]+)-([0-9]+)-([0-9]+)/([a-z]+)=([a-zA-Z0-9_]+)/'
+    r'v1/account_id=([0-9]+)/type=([a-z]+)/date=([0-9]+)-([0-9]+)-([0-9]+)/([a-z]+)=(.+?)/'
 )
 NEW_KEY_REPLACEMENT = r'\2/account=\1/\6=\7/'
 
