@@ -5,6 +5,9 @@ import boto3
 import re
 import json
 
+# 5MB, adjust as needed
+PART_SIZE = 5 * 1014 * 1024
+
 # S3 bucket names
 SOURCE_BUCKET_NAME = 'optimizely-events-data'
 DESTINATION_BUCKET_NAME = environ['DESTINATION_BUCKET_NAME']
@@ -19,7 +22,6 @@ ORIGINAL_KEY_REGEX = re.compile(
 NEW_KEY_REPLACEMENT = r'\2/account=\1/\6=\7/'
 
 
-# TODO: move function to Lambda layer
 def get_s3_client(token):
     # Make request to Optimizely auth API
     request = Request(
@@ -52,6 +54,107 @@ def does_object_exist(client, bucket, key):
         return False
 
 
+def get_file_size(client, bucket, key):
+    response = client.head_object(Bucket=bucket, Key=key)
+    return response['ContentLength']
+
+
+def create_multipart_upload(client, bucket, key):
+    response = client.create_multipart_upload(Bucket=bucket, Key=key)
+    return response['UploadId']
+
+
+def download_part(client, bucket, key, offset_from, offset_to):
+    response = client.get_object(
+        Bucket=bucket,
+        Key=key,
+        Range='bytes={0}-{1}'.format(
+            offset_from,
+            offset_to
+        )
+    )
+
+    return response['Body'].read()
+
+
+def upload_body(client, bucket, key, body):
+    response = response = client.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=body
+    )
+
+    return response['ETag']
+
+
+def upload_part(client, bucket, key, upload_id, part_number, body):
+    response = client.upload_part(
+        Bucket=bucket,
+        Key=key,
+        UploadId=upload_id,
+        PartNumber=part_number,
+        Body=body
+    )
+
+    return response['ETag']
+
+
+def complete_multipart_upload(client, bucket, key, upload_id, parts):
+    client.complete_multipart_upload(
+        Bucket=bucket,
+        Key=key,
+        UploadId=upload_id,
+        MultipartUpload={"Parts": parts}
+    )
+
+
+def stream_file(source_s3_client, destination_s3_client, source_bucket, destination_bucket, source_key, destination_key):
+    # Initialize counters
+    parts = []
+    part_number = 1
+    offset = 0
+
+     # Get file size
+    file_size = get_file_size(source_s3_client, source_bucket, source_key)
+
+    # Only perform multipart uploads on large files
+    is_multipart_upload = file_size >= PART_SIZE
+
+    # Initiate multipart upload
+    if is_multipart_upload:
+        upload_id = create_multipart_upload(destination_s3_client, destination_bucket, destination_key)
+
+    # Copy part by part
+    while offset < file_size:
+        # Calculate the end offset
+        offset_end = min(offset + PART_SIZE, file_size) - 1
+
+        # Download part
+        part_body = download_part(source_s3_client, source_bucket, source_key, offset, offset_end)
+
+        if is_multipart_upload:
+            # Upload part
+            etag = upload_part(destination_s3_client, destination_bucket, destination_key, upload_id, part_number, part_body)
+
+            # Prepare complete_multipart_upload request
+            parts.append({
+                'ETag': etag,
+                'PartNumber': part_number
+            })
+        else:
+            upload_body(destination_s3_client, destination_bucket, destination_key, part_body)
+
+        # Increase counters for next iteration
+        offset += PART_SIZE
+        part_number += 1
+
+    # Complete multipart upload
+    if is_multipart_upload:
+        complete_multipart_upload(destination_s3_client, destination_bucket, destination_key, upload_id, parts)
+
+    print("Completed upload of '{}' in {} parts".format(destination_key, len(parts)))
+
+
 def handler(event, context):
     for record in event['Records']:
         message = json.loads(record['body'])
@@ -81,17 +184,13 @@ def handler(event, context):
                 continue
 
             # Download from source bucket using source credentials
-            source_s3_client.download_file(
-                Filename=TEMPORARY_FILENAME,
-                Bucket=SOURCE_BUCKET_NAME,
-                Key=source_key,
-            )
-
-            # Upload to bucket in own account
-            destination_s3_client.upload_file(
-                Filename=TEMPORARY_FILENAME,
-                Bucket=DESTINATION_BUCKET_NAME,
-                Key=destination_key,
+            stream_file(
+                source_s3_client,
+                destination_s3_client,
+                SOURCE_BUCKET_NAME,
+                DESTINATION_BUCKET_NAME,
+                source_key,
+                destination_key
             )
 
             # Increment counter
@@ -108,7 +207,7 @@ if __name__ == '__main__':
                 'body': json.dumps({
                     'token': environ['OPTIMIZELY_API_TOKEN'],
                     'object_keys': [
-                        'v1/account_id=21537940595/type=events/date=2022-09-02/event=21514690867_button_1/part-00000-15a7b141-02da-4ccf-908f-3018698f4273.c000.snappy.parquet',
+                        'v1/account_id=21537940595/type=events/date=2024-01-01/event=NULL/part-00000-b5f3005a-d480-4d53-a600-0e9824e0fb60.c000.snappy.parquet',
                     ]
                 })
             }

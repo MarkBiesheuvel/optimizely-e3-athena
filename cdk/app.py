@@ -99,10 +99,15 @@ class OptimizelyE3Stack(Stack):
         input_bucket = s3.Bucket(self, 'Data',
             lifecycle_rules=[
                 s3.LifecycleRule(
-                    id="auto-delete",
+                    id='auto-delete',
                     enabled=True,
                     expiration=Duration.days(7),
-                )
+                ),
+                s3.LifecycleRule(
+                    id='auto-abort',
+                    enabled=True,
+                    abort_incomplete_multipart_upload_after=Duration.days(1),
+                ),
             ]
         )
         input_bucket.grant_read_write(copy_function_role) # Allow copy function to write to this bucket
@@ -119,7 +124,6 @@ class OptimizelyE3Stack(Stack):
             handler='index.handler',
             memory_size=1024,
             timeout=Duration.minutes(5),
-            ephemeral_storage_size=Size.mebibytes(10240), # Request extra /tmp storage since copying
             role=copy_function_role,
             events=[
                 lambda_event_source.SqsEventSource(
@@ -137,7 +141,7 @@ class OptimizelyE3Stack(Stack):
         results_bucket = s3.Bucket(self, 'Results',
             lifecycle_rules=[
                 s3.LifecycleRule(
-                    id="auto-delete",
+                    id='auto-delete',
                     enabled=True,
                     expiration=Duration.days(7),
                 )
