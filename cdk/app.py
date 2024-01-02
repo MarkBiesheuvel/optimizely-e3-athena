@@ -129,7 +129,7 @@ class OptimizelyE3Stack(Stack):
                 lambda_event_source.SqsEventSource(
                     import_queue,
                     batch_size=1,
-                    max_concurrency=6,
+                    max_concurrency=10,
                 )
             ],
             environment={
