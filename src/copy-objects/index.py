@@ -6,7 +6,7 @@ import re
 import json
 
 # 5MB, adjust as needed
-PART_SIZE = 5 * 1014 * 1024
+PART_SIZE = 5 * 1024 * 1024
 
 # S3 bucket names
 SOURCE_BUCKET_NAME = 'optimizely-events-data'

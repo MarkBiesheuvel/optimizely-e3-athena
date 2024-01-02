@@ -62,7 +62,7 @@ class OptimizelyE3Stack(Stack):
         # SQS queue to import list of objects
         import_queue = sqs.Queue(
             self, 'ImportQueue',
-            visibility_timeout=Duration.minutes(15),
+            visibility_timeout=Duration.minutes(5),
             enforce_ssl=True,
             retention_period=Duration.days(1),
             dead_letter_queue=sqs.DeadLetterQueue(
@@ -129,7 +129,7 @@ class OptimizelyE3Stack(Stack):
                 lambda_event_source.SqsEventSource(
                     import_queue,
                     batch_size=1,
-                    max_concurrency=5,
+                    max_concurrency=6,
                 )
             ],
             environment={
