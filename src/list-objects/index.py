@@ -87,7 +87,7 @@ def handler(event, context):
     end = event['end']
 
     start_date = date(start['year'], start['month'], start['day'])
-    end_date = date(start['year'], end['month'], end['day'])
+    end_date = date(end['year'], end['month'], end['day'])
 
     # AWS SDK clients
     s3_client, account_id = get_s3_client(token)
